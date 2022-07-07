@@ -1,0 +1,304 @@
+Modelo de Segurança do Android
+
+
+Este capítulo tratara sobre a arquitetura de processsos e mecanismos de comunicação entre prcoessos(IPC) e o modelo
+de segurança do Android e como ele se relaciona com a infraestrutura de segurança subjacente do Linux e assinatura de código.
+
+
+Arquitetura Android
+	- Vamos examinar brevemente a arquitetura do Android de baixo para cima:
+
+		 
++-------------------------------------------------------------+------------------------------------------+
+| System Apps(Settings, Phone, Launcher ETC)                  |   User-Installed Apps                    |
++-------------------------------------------------------------+------------------------------------------+
+| Android Framework Libraries(Android.*)                      |  Java Runtime Libraries(java.*, javax.*) |
++-------------------------------------------------------------+------------------------------------------+
+| 				System Services(Activity Mgr, Package Mgr, Window Mgr, ETC)              |
++-------------------------------------------------------------+------------------------------------------+
+|                                           Dalvik Runtime                                               |
++-------------------------------------------------------------+------------------------------------------+
+| Init       |          Native Daemons        | Native Libraries              | HAL                      |
++-------------------------------------------------------------+------------------------------------------+
+|                             Linux Kernel                    |                                          |
++-------------------------------------------------------------+------------------------------------------+
+
+	
+	KERNEL LINUX:
+		- COM VISIVEL NA FIGURA 1-1, o Android é construído/Projetado sobre o Kernel do Linux.
+	 	  Como em qualquer sistema Unix, o kernel fornece o suporte aos drivers para o hardware, rede, acesso ao sistema
+		  de arquivos e gerenciamento de processos. Graças ao Projeto Android Mainlining é possível executar o Android com um kernel vanilla(mais recente do diretório do Linus),
+	 	  considerando algum esforço para essa tarefa, mas um kernel para o Android é ligeiramente diferente do kernel Linux Convencional
+		  que é encontrado nas máquinas desktop(como o seu computador rodando uma versão UBUNTU, ELEMENTARY, DEEPIN ou qualquer outro), 
+		  As diferenças devem a um recurso apelidado de Androidisms2, a função dele é fornecer suporte ao Android.
+	 	  os principais Androidisms são os assasinos da poupa memória, wakelocks(Que integra  parte do suporte de ativação do kernel Linux Principal),
+		  memória compartilhada anônima(ashmem), alarmes, paranoid networking e Binder.
+		  Os Androidisms mais importantes para estudar são o Binder e Paranoid networking. o Binder implementa o IPC e um mecanismo de segurança associado,
+	       O trabalho da paranoid networking restring e o acesso aos sockets de rede aos aplicativos do modo de usuário que possuem permissões especificas.
+
+	ESPAÇO DE USUÁRIO NATIVO(Native Userspace):
+		- Na figura 1-1 acima do Kernel do Linux fica a camada nativa do espaço do usuário, que consiste no binário "init" (Pense nele como o primeiro processo iniciado, que inicia outros prcoessos),
+		  varios "daemons" nativos, e algumas centenas de bibliotecas com código nativo são utilizadas em todo o sistema. Enquanto a presença do binário "init' e "daemons" é uma reminiscência
+		  de um sistema Linux tradicional, observer que tanto o "init" como os scripts de inicialização associados a ele foram desenvolvidos a partir do zero e são bem diferentes de suas contrapartes do
+		  Linux original.
+
+	Anotações pessoas sobre os tópicos citados e onde buscar mais conhecimento:
+		-  Projeto Android Mainlining, http:// elinux.org/ Android_Mainlining_Project
+		-  Se você quiser uma explicação maior sobre o Androidisms leia  o livro Embedded Android de Karim Yaghmour, O'Reilly, 2013, nas páginas: 29–38.
+	
+	Davilk VM("A máquina virtual java para o Android entre muitas aspas")
+		- A maior parte do Android é implementada em Java, e como características de linguagens interpretadas é executada por uma Java Virtual Machine(JVM).
+		  a implementação atual da JVM do android é chamada de Dalvik. Diferente da JVM Clássica que usa o bytecode,
+		  o Dalvik foi projetado tendo em mente os dispositivos móveis em mente e não pode executar os bytecodes Java convencionais(.class), seu formato de entrada
+		  é chamado de Dalvik Executable(Apelidado de DEX) e é empacotado em Arquivos .dex que por sua vez ficam dentro de bibliotecas Java do Sistema(.JAR) 
+		  ou no caso dos APK's que você baixa na Google Play(ou deveria pelo menos, DIGA NÃO A PIRATARIA), eles ficam dentro dos aplicativos.
+		  A Dalvik ea JVM da Oracle possuem arquiteturas diferentes que são baseadas em registros, veja a diferença entre a Dalvik JVM com a JVM Convencional, e conjunto de instruções diferentes.
+		  Vejamos um exemplo simples para ilustrar as diferenças entre as duas VMs(consulte o snipet de código abaixo 1 em caso de duvidas):
+		
+			public static ind soma(int numeroA, int numeroB) {
+				return numeroA + numeroB;
+			}
+
+		  Quando o código de alto nível acima é compilado para cada VM diferente, o método estático soma(), lembre-se do conceito
+		  que você estudou sobre Java que estático inicia antes de todos os métodos e ocupa uma posição fixa compartilhada entre todos os objetos
+		  esse método soma dois números do tipo primitivo inteiro, e gera seu bytecode:
+
+		  Bytecode JVM:                                             Bytecode Dalvik:
+			 public static int soma(int, int)					   	.method public static soma(II)I
+				Code:										
+					0: iload_0(1)								 	add-int v0, p0, p1(5)
+					1: iload_1(2)	
+					2: iadd(3)									return v0(6)
+					3: ireturn(4)								.end method
+		
+		  Aqui a JVM usa duas instruções para carregar os parametros na sua stack(1 e o 2), então executa a soma(3) e finalmente ela retorna o resultado
+		  no 4, Ao contrario dissotemos o bytecode do Dalvik que usa só uma única instrução otimizada para somar dois parametros(Registradores p0 e p1) e armazenando
+		  o resultado da operação no registrador v0(5) que finalmente é retornado o valor do registrador v0(6), como você pode ver, Dalvik usa menos intruções para obter o mesmo resultado,
+		  mais o código resultante é maior que um código correspondente em uma VM baseada em pilha, glup glup isso não é uma referencia ofensiva a qualquer empreasa(Né dona Oracle),
+		  No entando, na maioria das arquiteturas, o carregamento do código é mais barato do que o despacho de instruções, portanto as VMs baseadas em registro podem ser interpretadas com uma eficiencia maior.
+		  	A grande maioria dos dispositivos com "ROM" para produção, aquelas prontas para o mercado como o seu celular da "SAMSUXA" que usa uma ROM para produção, não contem diretamente o código DEX
+			na verade o android efetua uma otimização de desempenho e ele converte os arquivos .DEX em arquivo .ODEX que é um DEX otimizado e normalmente ele fica armazenado
+			no diretorio do arquivo .JAR ou no diretório do APK(Aplicativo ao qual ele pertence), Esse processo ocorre também quando você instala um aplicativo.
+	
+	Bibliotécas de tempo de execução JAVA(Java Runtime Libraries):
+		- Uma implementação da Linguagem Java requer um conjunto de bibliotecas para tempo de execução definidas nos pacotes java.* e javax.*, uma característica é que as bibliotecas Java no Android originam-se do Projeto Apache Harmony4.
+		  a medida que o android vem evoluindo o código original que foi baseado no projeto Harmony também e durante esse processo os desenvolvedores alteraram recursos significantes ou substituiram recursos significantes(como o suporte à internacionalização, provedor de criptografia,
+		  e algumas classes relacionadas), equanto outros recursos foram melhorados.
+		- As bibliotecas principais utilizadas pelo Sistema Operacional Android são desenvolvidos usando a linguagem Java, mas também possuem algumas dependências que utilizam de código nativo
+		  em mais especifico usando JNI(Java Native Interface), isso permite o código Java chamar código nativo assim como injetar códigos e manipular a execução da JVM Davilk por exemplo.
+		  Como um exemplo pense em um APP que precisa fazer uma operação nativa.
+		
+	- Acima foi apresentado tudo que compõe o núcleo do sistema android e daqui para baixo veremos mais fundamentos.
+
+	Serviços do Sistema Android(System Services):
+		- Os serviços do sistema android, implementam recursos como suporte aos touchs da tela sensiveis ao toque, recursos de telefonia e recursos de conectividade.
+		- A maioria dos serviços no Android são escritos em Java, porem alguns são escritos em código nátivo C++, por exemplo quando se precisa comunicar com um Driver por exemplo usando IOCTL.
+		- Os serviços do sistema definem uma interface remota que pode ser necessária para chamada de outros serviços e aplicativos. isso com mediação do IPC fornecido pelo Binder.
+		  em teoria os serviços implementam um Sistema Operacional orientado a objetos sobre o Linux.
+
+	Comunicação entre processos(Inter-Process Communication):
+		- O Binder é um mecanismo de comunicação entre processos(IPC), antes de estudar mais a fundo o Binder é importante conhecer os detalhes do IPC:
+			- Como em qualquer sistema baseado em Unix no Android os endereços de um processo só pertencem a ele ou seja um processo não pode manipular a memória de um outro processo(sem privilégios),
+			  esse conceito chama-se isolamento de processo, esse recurso tem um motivo:
+				- Não é legal um processo manipular a memória de outro processo pois pode ser terrivel
+				- Pense em um aplicativo vulnerável, que poderia roubar os dados pessoas despejando as strings da memória de outro processo.
+			- Caso um prcoesso deseja oferecer algum serviço para outro processo, ele faz isso por meio de um IPC.
+			- A característica de uso de um mecanismo IPC não é originario de uma versão nova do Android, varias opções são anteriores a ele como por exemplo:
+				- Arquivos
+				- Signals
+				- Sockets
+				- Pipes
+				- Semaphores
+				- shared memory
+				- message queues
+				- Entre outros
+			- Embora o Android use alguns deles (como sockets de redes), ele não oferece suporte a outros(como IPCs do System v ou semaphores, shared memory segments e message queues).
+
+	Android Binder:
+		- O Mecanismo IPC padrão presente no linux não foi suficiente então foi desenvolvido um novo mecanismo IPC que foi apelidado de blinder(exclusivo par ao android), ele é inspirado nas ideias e arquitetura do openbinder
+		- O binder implementa arquitetura baseada em componentes distribuidos com interfaces abstratas, similar ao Windows Commom Object Model(COM) e Common Object Broker Request Architectures(CORBA), ambos para Windows e Unix respectivamente.
+
+	Implementação do binder:
+		- Nos sistemas unix, um processo não pode acessar a memória de outro processo, Porem utilizando o nível de kernel é possível ter controle sobre todos os prcoessos e ter expor uma interface que usa IPC.
+		- Essa interface é o /dev/binder que é implementado pelo driver kernel do binder.
+		- Binder é o centro e todas as chamadas IPC passam por ele, a comunicação ocorre via ioctl() que recebe e envia via binder_write_read(comandos para o driver) e binder_read_buffer(comandos para modo usuário)
+		- Os blocos de memória gerenciados pelo driver do Binder é somente de leitura para o processo e as gravações são feitas em kernel mode.
+		- Quando enviado uma mensagem inter-processos o kernel aloca algum espaço na memória do processo de destino copia os bytes dos dados enviados direto do processo de origem e em seguida cria uma fila, por fim o processo
+		  de destino pode acessar essa mensagem diretamente (Já que agora ela pertence ao seu espaço de memória). quando um processo de tranferencia de mensagem encerra ele avisa ao driver do binder para que ele limpe a região da memória similar a uma função free();
+		exemplo dessa comunicação:
+		
+		PROCESSO A 												   PROCESSO B
+		
+		  IBinder			<		IPC			>				  Binder Server
+		 transact()												  Binder: IBinder 
+																	onTransact() { case CMD1: ... }
+		
+								LINUX KERNEL
+							BINDER DRIVER(/dev/binder)
+		
+		
+		- Em um alto nível de abstração do IPC no android como Intents(Comandos com dados associados entregues a componentes e processos), Messengers(Objeto que permite comunicação baseada em mensagens entre processos) e ContentProviders(Componentes que expõem uma interface de gerenciamento de dados entre processos).
+		- Para que a comunicação funcione bem é necessário usar AIDL(Android interface Definition Language) permite que os cliente chamem serviços remotos como objetos Java local.
+		- A ferramenta AIDL gera stubs(representações do clientside pelo objeto remoto gerado) e proxies mapeiam métodos de interface para método Binder transact de nível inferior.
+		
+	Segurança do binder:
+		Em um alto nível cada objeto só é acessado por uma estrutura Binder, essa estrutura implementa de IBinder e é chamado pelos desenvolvedores do kernel android de object Binder(ou objeto binder em tradução direta).
+		Chamadas para o objeto Binder são efetuadas usando uma transação Binder(essa transação é composta por uma referencia ao objeto de destino, o ID do método que deve ser executado e um buffer com os dados a serem compartilhados)
+		O driver Binder adiciona automaticamente o ID do processo(PID) e o ID do usuário(EUID) do processo que está fazendo a chamada por intermédio da transação Binder.
+		Um processo em execução no contexto do kernel apelidado de (callee) pode inspecionar o PID e o EUID e decedir se deve executar o método solocitado com base na sua lógica interna ou metadados de todo sistema sobre o aplicativo caller.
+		Vale ressaltar que o PID e o EUID são preenchidos pelo kernel do linux, então não é possível por meios integros fazer com que um processo caller POSSA FALSIFICAR E PASSAR POR OUTRO PID para obter privilégios como por exemplo um caller
+		tentar passar por um PID do sistema para ter acesso a métodos únicos que não lhe são autorizados como OCORRE NO WINDOWS DKOM por exemplo, vale ressaltar que o Binder evita escalonamento de privilégios, sendo essa uma peça central do modelo de segurança do android
+		todas as abstrações de níveis superior como por exemplo as permissões se baseiam no Binder. o EUID e o PID do caller podem ser acessiveis por intermédio dos métodos getCallingPid() e getCallingUid() da classe android.os.Binder, que por coincidencia faz parte da API pública do Android.
+		
+    _ 
+   | |	
+   | |
+   | |	INFO: EUID do processo caller pode não ser mapeado para um único aplicativo android, se caso mais de um aplicativo android estiver executando no mesmo UID(veja minhas anotações no capitulo 2), no entanto	
+   |_|     	  isso não afeta as decisões de segurança, pois os processos executados sob o mesmo UID geralmente recebem o mesmo conjunto de permissões e privilégios()a menos que as regras estejam definidas no SELinux especificas para o processo definido).   
+   (_)  ! Aposto que 1% dos caras que lerem isso podem saber corretamente oque o selinux faz então veja esse artigo: https://debian-handbook.info/browse/pt-BR/stable/sect.selinux.html
+		! Dicas do tio Keowu: muitas pessoas esquecem que alguns apps seguros usam uma verificação do selinux com base em uma shell sem escalonamento de permissões isso é muito usado por aplicativos cagados como apps de banco ou jogos da tencent
+		
+	
+	Identidade Binder:
+		Uma das mais importantes propriedades dos objetos Binder é que eles mantem uma identidade única entre os processos. dessa forma se o processo A criar um objeto Binder e o passa para o processo B, que por sua vez passar para o processo C, as chamadas dos tres processos serão processados pelo mesmo objeto Binder.
+		De maneira mais conceitual pense que o processo A fará referencia ao objeto Binder diretamente pelo seu endereço de memória(porque ele está no espaço de memória do processo A que é "compartilhado"), enquanto os processos B e C receberam um Handle para o objeto Binder, nesse caso de A.
+		O Kernel do linux mantém o mapeamento entre objetos Binder ativos no contexto atual junto com seus handles em outros processos, como a identidade do Binder é única e mantida pelo Kernel, é impossível para os processos de modo usuário criar uma cópia dele ou referencia, a menos que tenha recebido
+		uma através do IPC. Assim, um objeto Binder é um objeto único não falsificável e comunicável que pode atuar como um token de segurança. isso permite o uso de segurança baseado em recursos android.
+		
+	Segurança baseada em capacidade:
+		Em um modelo de segurança baseado em capacidade, os programas recebem acesso a um recurso especifico, fornecendo a eles uma capacidade infalível que faz referencia ao ojeto de destino e encapsula um conjunto de direitos de acesso a ele. como capacidades não podem ser falsificadas, o fato de um processo possuir uma capacidade
+		é suficiente para lhe dar acesso ao recurso alvo. não há necessidade de manter listas de controle de acesso (ACLs) ou estruturas semelhantes associadas a recursos.
+		
+	Binder Tokens:
+		No android, os objetos Binder podem atuar como recursos e são chamados de tokens binder quando usados dessa maneira. Ele pode ser definido como um recurso e recurso de destiono, A posse de um token binder concede ao proprietario processar acesso total a um objeto Binder, permitindo que ele execute transações Binder no objeto de destino.
+		se o objeto Binder implementar várias ações(selecionando a ação a ser executada com base no parametro de código da transação Binder), p chamados poderá executar qualquer função de referencia desse objeto Binder, as permissões são verificadas por meio do PID e o EUID do processo caller.
+		Um padrão do sistema android é permitir que todas as ações de caller em execução como sistema(UID 1000) ou raiz(root)(UID 0), ao contrário ele verificara cada permissão adicional para todos os outros processos. assim o acesso a objetos Binder importantes, como serviços do sistema, é controlado de duas maneiras: limitando quem pode obter uma
+		referencia a esse objeto Binder e verificando a identidade do chamador antes de executar uma ação no objeto Binder.
+		Um objeto Binder pode ser usado apenas como recurso sem implementar qualquer outra funcionalidade, nesse padrão de uso, o mesmo objeto Binder é mantido por dois(ou mais) processos cooperantes, e aquele que atua como servidor(processando algum tipo de solicitação do cliente) usa token Binder para autenticar seus clientes, assim como os servidores da Web usam os cookies.
+		Um exemplo mais comum e notavel pelos usuários é o token Binder da janela, A janela superior de cada activity está associada a um token Binder, normalmente, seria terrivel se outros aplicativos adicionarem ou removerem janelas em cima do seu, cada solicitação para fazer isso deve fornecer um token de janela associado ao aplicativo, garantindo assim que as solicitações de janela
+		sejam provenientes do próprio aplicativo ou um processo do sistema já mencionado anteriormente.
+		
+	Acessando Objetos Binder:
+		Embora o Android controle o acesso a objetos Binder para fins de segurança, a única maneira de se comunicar com um objeto Binder é por meio de um referencia dele, temos algumas excessões como por exemplo os objetos Binder(serviços de sistema) precisam ser universalmente acessíveis. no entanto, é impraticável distribuir referencias
+		a todos os serviços do sistema para cada processo, por isso existe um mecanismo para obter essas referencias conforme necessário.
+		A estrutura Binder possui um gerenciador de contexto único, que mantém referencias aos objetos do Binder. a implementação do gerenciador de contexto do Android é o daemon nativo do servicemanager.
+		A maioria dos serviços do sistema android implementa verificações de permissão adicionais, portanto obter uma referencia não garante automaticamente acesso a todas as suas funcionalidades, como qualquer pessoa pode acessar um referencia Binder quando ela é registrada no gerenciador de serviços, apenas um pequeno conjunto de processos
+		do sistema na lista de permissões pode registrar serviços do sistema por exemplo, apenas um processo executando como UID 1002(AID_BLUETOOTH) podera registrar serviço do sistema de bluetooth.
+		A seguir é demonstrado um exemplo para visualizar a lista de serviços registrados no android, cada serviços cadastrado e a interfice IBinder implmentada:
+		
+		fluxussOsHardwareDev:/ $ service list
+		Found services:
+		0       sip: [android.net.sip.ISipService]
+		1       carrier_config: [com.android.internal.telephony.ICarrierConfigLoader]
+		2       phone: [com.android.internal.telephony.ITelephony]
+		3       isms: [com.android.internal.telephony.ISms]
+		4       iphonesubinfo: [com.android.internal.telephony.IPhoneSubInfo]
+		5       simphonebook: [com.android.internal.telephony.IIccPhoneBook]
+		6       isub: [com.android.internal.telephony.ISub]
+		7       media.camera: [android.hardware.ICameraService]
+		8       contexthub_service: [android.hardware.location.IContextHubService]
+		9       netd_listener: [android.net.metrics.INetdEventListener]
+		10      connmetrics: [android.net.IIpConnectivityMetrics]
+		11      connectivity_metrics_logger: [android.net.IConnectivityMetricsLogger]
+		12      bluetooth_manager: [android.bluetooth.IBluetoothManager]
+		13      imms: [com.android.internal.telephony.IMms]
+		14      media_projection: [android.media.projection.IMediaProjectionManager]
+		15      launcherapps: [android.content.pm.ILauncherApps]
+		16      shortcut: [android.content.pm.IShortcutService]
+		17      trust: [android.app.trust.ITrustManager]
+		18      media_router: [android.media.IMediaRouterService]
+		19      media_session: [android.media.session.ISessionManager]
+		20      restrictions: [android.content.IRestrictionsManager]
+		21      print: [android.print.IPrintManager]
+		22      graphicsstats: [android.view.IGraphicsStats]
+		23      dreams: [android.service.dreams.IDreamManager]
+		24      commontime_management: []
+		25      network_time_update_service: []
+		26      samplingprofiler: []
+		27      diskstats: []
+		28      voiceinteraction: [com.android.internal.app.IVoiceInteractionManagerService]
+		29      appwidget: [com.android.internal.appwidget.IAppWidgetService]
+		30      backup: [android.app.backup.IBackupManager]
+		31      soundtrigger: [com.android.internal.app.ISoundTriggerService]
+		32      jobscheduler: [android.app.job.IJobScheduler]
+		33      hardware_properties: [android.os.IHardwarePropertiesManager]
+		34      serial: [android.hardware.ISerialManager]
+		35      usb: [android.hardware.usb.IUsbManager]
+		36      DockObserver: []
+		37      audio: [android.media.IAudioService]
+		38      wallpaper: [android.app.IWallpaperManager]
+		39      dropbox: [com.android.internal.os.IDropBoxManagerService]
+		40      search: [android.app.ISearchManager]
+		41      country_detector: [android.location.ICountryDetector]
+		42      location: [android.location.ILocationManager]
+		43      devicestoragemonitor: []
+		44      notification: [android.app.INotificationManager]
+		45      recovery: [android.os.IRecoverySystem]
+		46      updatelock: [android.os.IUpdateLock]
+		47      servicediscovery: [android.net.nsd.INsdManager]
+		48      connectivity: [android.net.IConnectivityManager]
+		49      ethernet: [android.net.IEthernetManager]
+		50      rttmanager: [android.net.wifi.IRttManager]
+		51      wifiscanner: [android.net.wifi.IWifiScanner]
+		52      wifi: [android.net.wifi.IWifiManager]
+		53      wifip2p: [android.net.wifi.p2p.IWifiP2pManager]
+		54      netpolicy: [android.net.INetworkPolicyManager]
+		55      netstats: [android.net.INetworkStatsService]
+		56      network_score: [android.net.INetworkScoreService]
+		57      textservices: [com.android.internal.textservice.ITextServicesManager]
+		58      network_management: [android.os.INetworkManagementService]
+		59      clipboard: [android.content.IClipboard]
+		60      statusbar: [com.android.internal.statusbar.IStatusBarService]
+		61      device_policy: [android.app.admin.IDevicePolicyManager]
+		62      deviceidle: [android.os.IDeviceIdleController]
+		63      lock_settings: [com.android.internal.widget.ILockSettings]
+		64      uimode: [android.app.IUiModeManager]
+		65      mount: [IMountService]
+		66      accessibility: [android.view.accessibility.IAccessibilityManager]
+		67      input_method: [com.android.internal.view.IInputMethodManager]
+		68      pinner: []
+		69      vrmanager: [android.service.vr.IVrManager]
+		70      input: [android.hardware.input.IInputManager]
+		71      window: [android.view.IWindowManager]
+		72      alarm: [android.app.IAlarmManager]
+		73      consumer_ir: [android.hardware.IConsumerIrService]
+		74      vibrator: [android.os.IVibratorService]
+		75      content: [android.content.IContentService]
+		76      account: [android.accounts.IAccountManager]
+		77      media.camera.proxy: [android.hardware.ICameraServiceProxy]
+		78      telephony.registry: [com.android.internal.telephony.ITelephonyRegistry]
+		79      scheduling_policy: [android.os.ISchedulingPolicyService]
+		80      webviewupdate: [android.webkit.IWebViewUpdateService]
+		81      usagestats: [android.app.usage.IUsageStatsManager]
+		82      sensorservice: [android.gui.SensorServer]
+		83      battery: []
+		84      processinfo: [android.os.IProcessInfoService]
+		85      permission: [android.os.IPermissionController]
+		86      cpuinfo: []
+		87      dbinfo: []
+		88      gfxinfo: []
+		89      meminfo: []
+		90      procstats: [com.android.internal.app.procstats.IProcessStats]
+		91      activity: [android.app.IActivityManager]
+		92      user: [android.os.IUserManager]
+		93      otadexopt: [android.content.pm.IOtaDexopt]
+		94      package: [android.content.pm.IPackageManager]
+		95      display: [android.hardware.display.IDisplayManager]
+		96      batteryproperties: [android.os.IBatteryPropertiesRegistrar]
+		
+		    _ 
+		   | |	
+		   | |
+		   | |	INFO: Google, Referencia recomendada pelo livro: Android APIs Reference, "IBinder," http://developer.android.com/reference/android/os/IBinder.html
+		   |_|     	 
+		   (_)  
+		
+		
+		
+		Outras features do Binder:
+			Embora não esteja diretamente relacionado ao modelo de segurança existem dois outros recursos do Binder que é a contagem de referencia e a notificação de morte(death link).
+			A contagem de referencia é implementador no driver kernel com os IOCTL ->  BC_INCREFS, BC_ACQUIRE, BC_RELEASE e BC_DECREFS.
+			A notificação de morte surge quando um processo for eliminado pelo kernel e executam qualquer limpeza necessária, com os comandos IOCTL no kernel -> BC_REQUEST_DEATH_NOTIFICATION e BC_CLEAR_DEATH_NOTIFICATION e no linkToDeath() e unlinkToDeath()
+			
+		
+continuar escrita QUANDO EU TIVER TEMPO APROPRIADO!
